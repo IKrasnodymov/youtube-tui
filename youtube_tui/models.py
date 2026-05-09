@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Iterable, Optional
@@ -10,13 +10,6 @@ class PlaybackMode(Enum):
     EXTERNAL = "external"
     AUDIO_ONLY = "audio"
     IN_TERMINAL = "kitty"
-
-
-@dataclass(frozen=True)
-class Channel:
-    id: Optional[str]
-    name: str
-    subscriber_count: Optional[int] = None
 
 
 @dataclass(frozen=True)

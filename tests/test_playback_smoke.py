@@ -5,10 +5,18 @@ from pathlib import Path
 
 def test_supports_in_terminal_video_for_kitty(monkeypatch):
     monkeypatch.setenv("TERM", "xterm-kitty")
+    monkeypatch.delenv("TERM_PROGRAM", raising=False)
+    assert supports_in_terminal_video() is True
+
+def test_supports_in_terminal_video_for_ghostty_via_term_program(monkeypatch):
+    # tmux clobbers TERM but TERM_PROGRAM survives — must still detect kitty.
+    monkeypatch.setenv("TERM", "screen-256color")
+    monkeypatch.setenv("TERM_PROGRAM", "ghostty")
     assert supports_in_terminal_video() is True
 
 def test_supports_in_terminal_video_for_dumb(monkeypatch):
     monkeypatch.setenv("TERM", "dumb")
+    monkeypatch.delenv("TERM_PROGRAM", raising=False)
     assert supports_in_terminal_video() is False
 
 def test_build_args_external_includes_url():

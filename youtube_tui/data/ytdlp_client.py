@@ -135,28 +135,3 @@ async def detail(video_id: str) -> Video:
     return video
 
 
-async def stream_url(video_id: str, audio_only: bool = False) -> str:
-    fmt = "bestaudio/best" if audio_only else "best[height<=1080]/best"
-    url = f"https://www.youtube.com/watch?v={video_id}"
-    info = await _extract_async(url, {"format": fmt})
-
-    direct = info.get("url")
-    if direct:
-        return direct
-
-    requested = info.get("requested_formats") or []
-    if audio_only:
-        for fmt_info in requested:
-            if fmt_info.get("acodec") and fmt_info.get("acodec") != "none":
-                if fmt_info.get("url"):
-                    return fmt_info["url"]
-    for fmt_info in requested:
-        if fmt_info.get("url"):
-            return fmt_info["url"]
-
-    formats = info.get("formats") or []
-    for fmt_info in reversed(formats):
-        if fmt_info.get("url"):
-            return fmt_info["url"]
-
-    raise YTDLPError(f"no playable URL resolved for {video_id!r}")

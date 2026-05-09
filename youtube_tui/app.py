@@ -2,18 +2,33 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 import webbrowser
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
 from textual.app import App
 from textual.binding import Binding
 
-from .config import LOG_DIR, ensure_dirs
-from .data import ytdlp_client
+from .config import CACHE_DIR, LOG_DIR, ensure_dirs
+from .data import thumbnails
 from .models import PlaybackMode, Video
 from .playback import mpv_process
 from .storage.db import Library
+
+
+_INLINE_INPUT_CONF = "\n".join(
+    [
+        "ESC quit",
+        "q quit",
+        "SPACE cycle pause",
+        "LEFT seek -5",
+        "RIGHT seek 5",
+        "UP seek 60",
+        "DOWN seek -60",
+    ]
+) + "\n"
 
 
 def _setup_logger() -> logging.Logger:
@@ -22,7 +37,9 @@ def _setup_logger() -> logging.Logger:
     if log.handlers:
         return log
     log.setLevel(logging.INFO)
-    handler = logging.FileHandler(LOG_DIR / "app.log", mode="a")
+    handler = RotatingFileHandler(
+        LOG_DIR / "app.log", maxBytes=1_000_000, backupCount=2
+    )
     handler.setFormatter(
         logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
     )
@@ -75,30 +92,31 @@ class YouTubeTUI(App[None]):
 
         self.push_screen(HomeScreen())
 
-    def on_unmount(self) -> None:
-        # Kill any mpv we still own — terminals don't always SIGHUP children
-        # cleanly when closed, so we explicitly clean up.
+    async def on_unmount(self) -> None:
+        # Terminals don't always SIGHUP children cleanly when closed;
+        # explicit cleanup avoids orphan mpv processes that keep playing audio.
         if self._inline_proc is not None and self._inline_proc.returncode is None:
             try:
                 self._inline_proc.kill()
             except Exception:
                 pass
         for mp in list(self._mpv_processes):
-            if mp.is_running():
-                try:
-                    mp.proc.kill()
-                except Exception:
-                    pass
+            try:
+                await mp.terminate()
+            except Exception:
+                pass
+        self._mpv_processes.clear()
+        try:
+            await thumbnails.aclose_client()
+        except Exception:
+            pass
         try:
             if self.library is not None:
                 self.library.close()
         except Exception:
             pass
 
-    # ---- navigation actions -----------------------------------------------
-
     def _pop_to(self, cls: type) -> bool:
-        """Pop screens until an instance of `cls` is on top. Returns True if found."""
         idx = None
         for i, scr in enumerate(self.screen_stack):
             if isinstance(scr, cls):
@@ -137,8 +155,6 @@ class YouTubeTUI(App[None]):
 
         self.push_screen(HelpScreen())
 
-    # ---- public handlers used by screens ---------------------------------
-
     def open_detail(self, video: Video) -> None:
         from .screens.video_detail import VideoDetailScreen
 
@@ -149,23 +165,18 @@ class YouTubeTUI(App[None]):
     ) -> None:
         if not mpv_process.is_mpv_available():
             self.notify(
-                "mpv not installed. Run: brew install mpv",
-                severity="error",
+                "mpv not installed. Run: brew install mpv", severity="error"
             )
             return
-        # Auto-pick = always in-terminal. mpv VO is selected per-terminal
-        # inside _play_inline (kitty graphics → tct block-art fallback).
         if mode is None:
             mode = PlaybackMode.IN_TERMINAL
         self.run_worker(
-            self._play_async(video, mode),
-            exclusive=True,
-            group="player",
+            self._play_async(video, mode), exclusive=True, group="player"
         )
 
     async def _play_async(self, video: Video, mode: PlaybackMode) -> None:
-        # Pass the YouTube watch URL directly to mpv — mpv invokes yt-dlp itself
-        # so it gets fresh URLs with proper headers (avoids 403s from stripped pre-resolved URLs).
+        # Pass the watch URL straight to mpv — pre-resolved stream URLs strip
+        # required headers and the CDN returns 403.
         if mode is PlaybackMode.IN_TERMINAL:
             await self._play_inline(video)
             return
@@ -181,22 +192,16 @@ class YouTubeTUI(App[None]):
             return
 
         self._mpv_processes.append(proc)
+        self._reap_finished_mpv()
         from .screens.now_playing import NowPlayingScreen
 
         self.push_screen(NowPlayingScreen(video, proc, mode))
 
+    def _reap_finished_mpv(self) -> None:
+        self._mpv_processes = [mp for mp in self._mpv_processes if mp.is_running()]
+
     async def _play_inline(self, video: Video) -> None:
-        """In-terminal playback: suspend the TUI so mpv owns the terminal,
-        wait until mpv exits, then resume."""
-        import sys
-
-        from .config import CACHE_DIR
-
         _log.info("inline play start: %s", video.id)
-        # Pick the right VO for the current terminal:
-        # - kitty graphics protocol → real images (Ghostty, kitty, WezTerm)
-        # - tct (true-color blocks) → fallback for everything else
-        # Note: --vo-kitty-use-shm is Linux-only, do not pass it on macOS.
         if mpv_process.supports_in_terminal_video():
             vo_args = ["--vo=kitty"]
             vo_label = "kitty graphics"
@@ -204,34 +209,17 @@ class YouTubeTUI(App[None]):
             vo_args = ["--vo=tct"]
             vo_label = "block art (no kitty graphics in this terminal)"
         self.notify(
-            f"Playing — {vo_label}. Press q or ESC to exit.",
-            timeout=5,
+            f"Playing — {vo_label}. Press q or ESC to exit.", timeout=5
         )
 
-        # Custom input bindings — mpv's defaults bind ESC to fullscreen-toggle,
-        # but here we want it to quit. Also bind some friendly seek keys.
+        # mpv's default ESC = fullscreen-toggle; we want quit. Custom keymap also
+        # adds friendly seek keys.
         input_conf = CACHE_DIR / "ytui-mpv-input.conf"
-        input_conf.write_text(
-            "\n".join(
-                [
-                    "ESC quit",
-                    "q quit",
-                    "SPACE cycle pause",
-                    "LEFT seek -5",
-                    "RIGHT seek 5",
-                    "UP seek 60",
-                    "DOWN seek -60",
-                ]
-            )
-            + "\n"
-        )
+        input_conf.write_text(_INLINE_INPUT_CONF)
 
         log_path = CACHE_DIR / "mpv.log"
-        # --really-quiet kills status / warnings printed to the terminal so
-        # they don't smear the video. Detailed diagnostics go to log file.
-        # Lower res + cache + sw-fast keeps kitty-graphics smooth — every
-        # frame is base64-encoded over the terminal pipe, so 480p is the
-        # sweet spot on macOS.
+        # 480p + sw-fast + cache: every frame is base64-encoded over the
+        # terminal pipe, so resolution dominates framerate.
         args = [
             "mpv",
             *vo_args,
@@ -253,7 +241,6 @@ class YouTubeTUI(App[None]):
 
         driver = getattr(self, "_driver", None)
         can_suspend = bool(driver and getattr(driver, "can_suspend", False))
-        _log.info("driver=%r can_suspend=%s", driver, can_suspend)
         if not can_suspend:
             self.notify(
                 "Terminal driver does not support suspend; opening in window.",
@@ -263,22 +250,16 @@ class YouTubeTUI(App[None]):
             return
 
         rc: int = -1
-        # Sink mpv's stderr to the log file so its diagnostics don't paint
-        # over the video frame in the terminal.
         stderr_fh = open(log_path, "ab")
         try:
             with self.suspend():
                 proc = await asyncio.create_subprocess_exec(
-                    *args,
-                    stdin=None,
-                    stdout=None,
-                    stderr=stderr_fh,
+                    *args, stdin=None, stdout=None, stderr=stderr_fh
                 )
                 self._inline_proc = proc
                 rc = await proc.wait()
                 self._inline_proc = None
-                # Reset terminal before Textual resumes, so leftover kitty
-                # graphics ids and any stray escape state are cleared.
+                # Clear leftover kitty graphics state before Textual resumes.
                 try:
                     sys.stdout.write("\x1b[?25h\x1b[2J\x1b[H")
                     sys.stdout.flush()

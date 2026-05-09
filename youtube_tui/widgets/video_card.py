@@ -62,8 +62,6 @@ class VideoCard(Static):
     def __init__(self, video: Video, **kwargs) -> None:
         super().__init__(**kwargs)
         self.video = video
-        self._thumb_loaded = False
-        self._image: Image | None = None
 
     def compose(self) -> ComposeResult:
         with Horizontal():
@@ -89,10 +87,7 @@ class VideoCard(Static):
             text.append("· " + v.published_at, style="#888888")
         return text
 
-    async def on_mount(self) -> None:
-        if self._thumb_loaded:
-            return
-        self._thumb_loaded = True
+    def on_mount(self) -> None:
         self.run_worker(self._load_thumb(), exclusive=True, group=f"thumb-{self.video.id}")
 
     async def _load_thumb(self) -> None:
@@ -102,9 +97,7 @@ class VideoCard(Static):
         if path is None:
             return
         try:
-            img = Image(str(path))
-            await self._wrap.mount(img)
-            self._image = img
+            await self._wrap.mount(Image(str(path)))
         except Exception:
             return
 

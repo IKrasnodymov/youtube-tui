@@ -75,7 +75,7 @@ class VideoList(VerticalScroll, can_focus=True):
         if self._cards:
             self.mount_all(self._cards)
         self.cursor = 0
-        self._update_selection()
+        self._select_initial()
         self.scroll_home(animate=False)
 
     def current(self) -> Optional[Video]:
@@ -84,19 +84,21 @@ class VideoList(VerticalScroll, can_focus=True):
         idx = max(0, min(self.cursor, len(self._cards) - 1))
         return self._cards[idx].video
 
-    def watch_cursor(self, _old: int, _new: int) -> None:
-        self._update_selection()
-
-    def _update_selection(self) -> None:
+    def watch_cursor(self, old: int, new: int) -> None:
         if not self._cards:
             return
-        idx = max(0, min(self.cursor, len(self._cards) - 1))
-        for i, card in enumerate(self._cards):
-            if i == idx:
-                card.add_class("-selected")
-            else:
-                card.remove_class("-selected")
-        self.scroll_to_widget(self._cards[idx], animate=False)
+        n = len(self._cards)
+        old_idx = max(0, min(old, n - 1))
+        new_idx = max(0, min(new, n - 1))
+        if old_idx != new_idx and 0 <= old_idx < n:
+            self._cards[old_idx].remove_class("-selected")
+        self._cards[new_idx].add_class("-selected")
+        self.scroll_to_widget(self._cards[new_idx], animate=False)
+
+    def _select_initial(self) -> None:
+        if self._cards:
+            self._cards[0].add_class("-selected")
+            self.scroll_to_widget(self._cards[0], animate=False)
 
     def action_cursor_down(self) -> None:
         if not self._cards:
@@ -135,7 +137,7 @@ class VideoList(VerticalScroll, can_focus=True):
         if v is not None:
             self.post_message(self.OpenInBrowserRequested(v))
 
-    async def on_click(self, event: events.Click) -> None:
+    def on_click(self, event: events.Click) -> None:
         for i, card in enumerate(self._cards):
             if card.region.contains(event.screen_x, event.screen_y):
                 self.cursor = i

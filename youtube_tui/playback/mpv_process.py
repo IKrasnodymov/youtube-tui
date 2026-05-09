@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -11,6 +10,9 @@ from uuid import uuid4
 
 from ..config import CACHE_DIR, ensure_dirs
 from ..models import PlaybackMode
+
+
+_KITTY_TERMS = ("kitty", "ghostty", "wezterm")
 
 
 class MpvNotFoundError(RuntimeError):
@@ -22,15 +24,18 @@ def is_mpv_available() -> bool:
 
 
 def supports_in_terminal_video() -> bool:
+    """True iff TERM or TERM_PROGRAM names a terminal that speaks the kitty
+    graphics protocol. Ghostty under tmux sets TERM=screen, so checking
+    both env vars matters."""
     term = os.environ.get("TERM", "").lower()
-    return any(n in term for n in ("kitty", "ghostty", "wezterm"))
+    term_program = os.environ.get("TERM_PROGRAM", "").lower()
+    return any(n in term or n in term_program for n in _KITTY_TERMS)
 
 
 @dataclass
 class MpvProcess:
     proc: asyncio.subprocess.Process
     ipc_path: Path
-    started_at: float
 
     async def wait(self) -> int:
         return await self.proc.wait()
@@ -58,13 +63,7 @@ class MpvProcess:
                 pass
 
 
-def _build_args(
-    stream_url: str,
-    mode: PlaybackMode,
-    ipc_path: Path,
-    *,
-    force_window: bool = False,
-) -> list[str]:
+def _build_args(stream_url: str, mode: PlaybackMode, ipc_path: Path) -> list[str]:
     args: list[Optional[str]] = ["mpv"]
 
     # Format selection — mpv runs yt-dlp itself so it can refresh URLs and
@@ -83,22 +82,14 @@ def _build_args(
     args.append(f"--input-ipc-server={ipc_path}")
     args.append("--really-quiet")
     args.append("--idle=no")
-
-    want_force_window = (
-        mode is PlaybackMode.EXTERNAL or (force_window and mode is not PlaybackMode.IN_TERMINAL)
-    )
-    args.append("--force-window=immediate" if want_force_window else None)
+    if mode is PlaybackMode.EXTERNAL:
+        args.append("--force-window=immediate")
 
     args.append(stream_url)
     return [a for a in args if a is not None]
 
 
-async def launch(
-    stream_url: str,
-    mode: PlaybackMode,
-    *,
-    force_window: bool = False,
-) -> MpvProcess:
+async def launch(stream_url: str, mode: PlaybackMode) -> MpvProcess:
     if not is_mpv_available():
         raise MpvNotFoundError("mpv executable not found on PATH")
 
@@ -110,7 +101,7 @@ async def launch(
     log_path = CACHE_DIR / "mpv.log"
     log_fh = open(log_path, "ab")
     try:
-        args = _build_args(stream_url, mode, ipc_path, force_window=force_window)
+        args = _build_args(stream_url, mode, ipc_path)
         proc = await asyncio.create_subprocess_exec(
             *args,
             stdin=asyncio.subprocess.DEVNULL,
@@ -120,4 +111,4 @@ async def launch(
     finally:
         log_fh.close()
 
-    return MpvProcess(proc=proc, ipc_path=ipc_path, started_at=time.time())
+    return MpvProcess(proc=proc, ipc_path=ipc_path)
