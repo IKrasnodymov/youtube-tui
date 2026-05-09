@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "youtube-tui"
+version = "0.1.0"
+description = "Watch YouTube in your terminal — Textual TUI with kitty-protocol thumbnails and mpv playback"
+requires-python = ">=3.10,<4"
+readme = "README.md"
+authors = [{ name = "youtube_tui" }]
+dependencies = [
+  "textual>=0.83,<2",
+  "textual-image[textual]>=0.7",
+  "yt-dlp>=2025.1.0",
+  "httpx>=0.27",
+  "pillow>=10.0",
+  "platformdirs>=4.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+ytui = "youtube_tui.__main__:main"
+youtube-tui = "youtube_tui.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["youtube_tui*"]
+
+[tool.setuptools.package-data]
+youtube_tui = ["tui.tcss", "storage/schema.sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

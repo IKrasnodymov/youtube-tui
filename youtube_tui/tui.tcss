@@ -1,0 +1,35 @@
+/* youtube_tui theme — dark with YouTube-red accents */
+
+$yt-red: #ff0033;
+$yt-bg: #0f0f0f;
+$yt-panel: #1a1a1a;
+$yt-text: #f1f1f1;
+$yt-muted: #aaaaaa;
+$yt-border: #303030;
+
+Screen {
+    background: $yt-bg;
+    color: $yt-text;
+}
+
+Header {
+    background: $yt-panel;
+    color: $yt-text;
+}
+
+Footer {
+    background: $yt-panel;
+    color: $yt-muted;
+}
+
+Footer > .footer--key {
+    background: $yt-red;
+    color: white;
+}
+
+#placeholder {
+    width: 100%;
+    height: 1fr;
+    content-align: center middle;
+    color: $yt-muted;
+}
