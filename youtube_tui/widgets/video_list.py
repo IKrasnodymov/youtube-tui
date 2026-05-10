@@ -7,6 +7,7 @@ from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual.message import Message
 from textual.reactive import reactive
+from textual.widgets import Static
 
 from ..models import Video
 from .video_card import VideoCard
@@ -15,10 +16,20 @@ from .video_card import VideoCard
 class VideoList(VerticalScroll, can_focus=True):
     """Vim-navigable scrollable list of VideoCards."""
 
+    CARD_HEIGHT = 11
+    COMPACT_CARD_HEIGHT = 6
+    THUMB_PRELOAD_RADIUS = 3
+    OVERSCAN = 6
+    MAX_WINDOW_CARDS = 48
+    COMPACT_WIDTH = 72
+
     DEFAULT_CSS = """
     VideoList {
         height: 1fr;
         background: #0f0f0f;
+    }
+    VideoList .virtual-spacer {
+        width: 100%;
     }
     """
 
@@ -61,52 +72,168 @@ class VideoList(VerticalScroll, can_focus=True):
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
-        self._cards: list[VideoCard] = []
+        self._videos: list[Video] = []
+        self._cards: dict[int, VideoCard] = {}
+        self._top_spacer = Static(classes="virtual-spacer")
+        self._bottom_spacer = Static(classes="virtual-spacer")
         self._g_pressed = False
+        self._compact = False
+        self._window_start = 0
+        self._window_end = 0
+        self._refreshing_window = False
 
     @property
     def videos(self) -> list[Video]:
-        return [c.video for c in self._cards]
+        return list(self._videos)
 
     def set_videos(self, videos: Iterable[Video]) -> None:
         for child in list(self.children):
             child.remove()
-        self._cards = [VideoCard(v) for v in videos]
-        if self._cards:
-            self.mount_all(self._cards)
+        self._videos = list(videos)
+        self._cards = {}
+        self._window_start = 0
+        self._window_end = 0
+        self._top_spacer = Static(classes="virtual-spacer")
+        self._bottom_spacer = Static(classes="virtual-spacer")
+        self._apply_compact_mode()
         self.cursor = 0
-        self._select_initial()
         self.scroll_home(animate=False)
+        self._render_window(force=True)
+        self._load_visible_thumbnails()
 
     def current(self) -> Optional[Video]:
-        if not self._cards:
+        if not self._videos:
             return None
-        idx = max(0, min(self.cursor, len(self._cards) - 1))
-        return self._cards[idx].video
+        idx = max(0, min(self.cursor, len(self._videos) - 1))
+        return self._videos[idx]
 
     def watch_cursor(self, old: int, new: int) -> None:
-        if not self._cards:
+        if not self._videos:
             return
-        n = len(self._cards)
+        n = len(self._videos)
         old_idx = max(0, min(old, n - 1))
         new_idx = max(0, min(new, n - 1))
-        if old_idx != new_idx and 0 <= old_idx < n:
-            self._cards[old_idx].remove_class("-selected")
-        self._cards[new_idx].add_class("-selected")
-        self.scroll_to_widget(self._cards[new_idx], animate=False)
+        old_card = self._cards.get(old_idx)
+        if old_idx != new_idx and old_card is not None:
+            old_card.remove_class("-selected")
+        self._scroll_cursor_into_view()
+        self._render_window()
+        new_card = self._cards.get(new_idx)
+        if new_card is not None:
+            new_card.add_class("-selected")
+        self._load_visible_thumbnails()
 
-    def _select_initial(self) -> None:
-        if self._cards:
-            self._cards[0].add_class("-selected")
-            self.scroll_to_widget(self._cards[0], animate=False)
+    def _load_visible_thumbnails(self) -> None:
+        if self._compact or not self._videos:
+            return
+        start, end = self._visible_range(extra=self.THUMB_PRELOAD_RADIUS)
+        for idx in range(start, end):
+            card = self._cards.get(idx)
+            if card is None:
+                continue
+            card.ensure_thumbnail()
+
+    def _apply_compact_mode(self) -> None:
+        compact = self.size.width > 0 and self.size.width < self.COMPACT_WIDTH
+        if compact == self._compact:
+            return
+        self._compact = compact
+        for card in self._cards.values():
+            card.set_compact(compact)
+        self._render_window(force=True)
+        self._load_visible_thumbnails()
+
+    def on_resize(self, event: events.Resize) -> None:
+        self._apply_compact_mode()
+        self._render_window()
+
+    def watch_scroll_y(self, old: float, new: float) -> None:
+        if self._refreshing_window:
+            return
+        self._render_window()
+        self._load_visible_thumbnails()
+
+    def _card_height(self) -> int:
+        return self.COMPACT_CARD_HEIGHT if self._compact else self.CARD_HEIGHT
+
+    def _visible_range(self, *, extra: int = 0) -> tuple[int, int]:
+        if not self._videos:
+            return (0, 0)
+        card_height = self._card_height()
+        visible_count = max(1, int(self.size.height // card_height) + 1)
+        visible_count = min(visible_count, self.MAX_WINDOW_CARDS)
+        start = max(0, int(self.scroll_y // card_height) - extra)
+        window_size = min(self.MAX_WINDOW_CARDS, visible_count + (extra * 2))
+        end = min(len(self._videos), start + window_size)
+        return start, end
+
+    def _window_range(self) -> tuple[int, int]:
+        start, end = self._visible_range(extra=self.OVERSCAN)
+        if self._videos:
+            if self.cursor < start:
+                start = max(0, self.cursor)
+                end = min(len(self._videos), start + self.MAX_WINDOW_CARDS)
+            elif self.cursor >= end:
+                end = min(len(self._videos), self.cursor + 1)
+                start = max(0, end - self.MAX_WINDOW_CARDS)
+        return start, end
+
+    def _set_spacer_heights(self, start: int, end: int) -> None:
+        card_height = self._card_height()
+        self._top_spacer.styles.height = start * card_height
+        self._bottom_spacer.styles.height = max(0, len(self._videos) - end) * card_height
+
+    def _make_card(self, index: int) -> VideoCard:
+        card = VideoCard(self._videos[index])
+        card.set_compact(self._compact)
+        if index == self.cursor:
+            card.add_class("-selected")
+        return card
+
+    def _render_window(self, *, force: bool = False) -> None:
+        if self._refreshing_window:
+            return
+        start, end = self._window_range()
+        if not force and start == self._window_start and end == self._window_end:
+            self._update_selection_classes()
+            self._set_spacer_heights(start, end)
+            return
+
+        self._refreshing_window = True
+        try:
+            for child in list(self.children):
+                child.remove()
+            self._cards = {i: self._make_card(i) for i in range(start, end)}
+            self._set_spacer_heights(start, end)
+            children = [self._top_spacer, *self._cards.values(), self._bottom_spacer]
+            self.mount_all(children)
+            self._window_start = start
+            self._window_end = end
+        finally:
+            self._refreshing_window = False
+
+    def _update_selection_classes(self) -> None:
+        for idx, card in self._cards.items():
+            card.set_class(idx == self.cursor, "-selected")
+
+    def _scroll_cursor_into_view(self) -> None:
+        card_height = self._card_height()
+        top = self.cursor * card_height
+        bottom = top + card_height
+        viewport_top = self.scroll_y
+        viewport_bottom = viewport_top + max(1, self.size.height)
+        if top < viewport_top:
+            self.scroll_to(y=top, animate=False)
+        elif bottom > viewport_bottom:
+            self.scroll_to(y=max(0, bottom - self.size.height), animate=False)
 
     def action_cursor_down(self) -> None:
-        if not self._cards:
+        if not self._videos:
             return
-        self.cursor = min(self.cursor + 1, len(self._cards) - 1)
+        self.cursor = min(self.cursor + 1, len(self._videos) - 1)
 
     def action_cursor_up(self) -> None:
-        if not self._cards:
+        if not self._videos:
             return
         self.cursor = max(self.cursor - 1, 0)
 
@@ -114,8 +241,8 @@ class VideoList(VerticalScroll, can_focus=True):
         self.cursor = 0
 
     def action_cursor_end(self) -> None:
-        if self._cards:
-            self.cursor = len(self._cards) - 1
+        if self._videos:
+            self.cursor = len(self._videos) - 1
 
     def action_select(self) -> None:
         v = self.current()
@@ -138,9 +265,9 @@ class VideoList(VerticalScroll, can_focus=True):
             self.post_message(self.OpenInBrowserRequested(v))
 
     def on_click(self, event: events.Click) -> None:
-        for i, card in enumerate(self._cards):
+        for i, card in self._cards.items():
             if card.region.contains(event.screen_x, event.screen_y):
                 self.cursor = i
                 if event.button == 1:
-                    self.post_message(self.Selected(card.video))
+                    self.post_message(self.Selected(self._videos[i]))
                 break

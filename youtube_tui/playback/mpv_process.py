@@ -37,18 +37,29 @@ class MpvProcess:
     proc: asyncio.subprocess.Process
     ipc_path: Path
 
+    def cleanup_socket(self) -> None:
+        try:
+            self.ipc_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
     async def wait(self) -> int:
-        return await self.proc.wait()
+        try:
+            return await self.proc.wait()
+        finally:
+            self.cleanup_socket()
 
     def is_running(self) -> bool:
         return self.proc.returncode is None
 
     async def terminate(self) -> None:
         if self.proc.returncode is not None:
+            self.cleanup_socket()
             return
         try:
             self.proc.terminate()
         except ProcessLookupError:
+            self.cleanup_socket()
             return
         try:
             await asyncio.wait_for(self.proc.wait(), timeout=2.0)
@@ -56,11 +67,14 @@ class MpvProcess:
             try:
                 self.proc.kill()
             except ProcessLookupError:
+                self.cleanup_socket()
                 return
             try:
                 await asyncio.wait_for(self.proc.wait(), timeout=1.0)
             except asyncio.TimeoutError:
                 pass
+        finally:
+            self.cleanup_socket()
 
 
 def _build_args(stream_url: str, mode: PlaybackMode, ipc_path: Path) -> list[str]:
@@ -75,9 +89,13 @@ def _build_args(stream_url: str, mode: PlaybackMode, ipc_path: Path) -> list[str
         # --vo-kitty-use-shm is Linux-only — passing it on macOS breaks kitty VO.
         args.append("--vo=kitty")
         args.append("--hwdec=no")
-        args.append("--ytdl-format=best[height<=720]/best")
+        args.append(
+            "--ytdl-format=bv*[height<=720][vcodec^=avc1]+ba/bv*[height<=720]+ba/b[height<=720]/best[height<=720]/best"
+        )
     else:
-        args.append("--ytdl-format=best[height<=1080]/best")
+        args.append(
+            "--ytdl-format=bv*[height<=1080][vcodec^=avc1]+ba/bv*[height<=1080]+ba/b[height<=1080]/best[height<=1080]/best"
+        )
 
     args.append(f"--input-ipc-server={ipc_path}")
     args.append("--really-quiet")
@@ -108,6 +126,12 @@ async def launch(stream_url: str, mode: PlaybackMode) -> MpvProcess:
             stdout=asyncio.subprocess.DEVNULL,
             stderr=log_fh,
         )
+    except Exception:
+        try:
+            ipc_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
     finally:
         log_fh.close()
 

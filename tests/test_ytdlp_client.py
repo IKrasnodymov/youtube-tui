@@ -61,7 +61,7 @@ def test_cache_update_keeps_value_fresh() -> None:
 
 
 @pytest.mark.skipif(
-    bool(os.getenv("YTUI_NO_NET")), reason="needs network"
+    not bool(os.getenv("YTUI_NET")), reason="set YTUI_NET=1 to run live network smoke"
 )
 async def test_search_smoke() -> None:
     from youtube_tui.data.ytdlp_client import search

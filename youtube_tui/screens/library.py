@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+
+from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
@@ -66,10 +69,23 @@ class LibraryScreen(Screen):
         self._reload()
         self.history_list.focus()
 
+    @on(TabbedContent.TabActivated)
+    def on_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        if event.pane.id == "tab-favorites":
+            self.fav_list.focus()
+        else:
+            self.history_list.focus()
+
     def _reload(self) -> None:
+        self.status.show("Loading library...", busy=True)
+        self.run_worker(self._load_library(), exclusive=True, group="library-load")
+
+    async def _load_library(self) -> None:
         try:
-            history = self.app.library.recent_history(limit=100)
-            favs = self.app.library.list_favorites(limit=200)
+            history, favs = await asyncio.gather(
+                asyncio.to_thread(self.app.library.recent_history, 100),
+                asyncio.to_thread(self.app.library.list_favorites, 200),
+            )
         except Exception as e:
             self.app.notify(f"Couldn't load library: {e}", severity="error")
             return

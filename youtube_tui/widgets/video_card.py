@@ -39,6 +39,12 @@ class VideoCard(Static):
         width: 100%;
         height: 100%;
     }
+    VideoCard.-compact {
+        height: 6;
+    }
+    VideoCard.-compact .thumb-wrap {
+        display: none;
+    }
     VideoCard .info {
         width: 1fr;
         height: 100%;
@@ -62,6 +68,7 @@ class VideoCard(Static):
     def __init__(self, video: Video, **kwargs) -> None:
         super().__init__(**kwargs)
         self.video = video
+        self._thumbnail_loaded = False
 
     def compose(self) -> ComposeResult:
         with Horizontal():
@@ -87,7 +94,13 @@ class VideoCard(Static):
             text.append("· " + v.published_at, style="#888888")
         return text
 
-    def on_mount(self) -> None:
+    def set_compact(self, compact: bool) -> None:
+        self.set_class(compact, "-compact")
+
+    def ensure_thumbnail(self) -> None:
+        if self._thumbnail_loaded or not self.video.thumbnail_url:
+            return
+        self._thumbnail_loaded = True
         self.run_worker(self._load_thumb(), exclusive=True, group=f"thumb-{self.video.id}")
 
     async def _load_thumb(self) -> None:

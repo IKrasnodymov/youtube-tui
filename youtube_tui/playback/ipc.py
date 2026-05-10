@@ -128,7 +128,7 @@ class MpvIPC:
             self._writer.write(data)
             await self._writer.drain()
 
-    async def command(self, *args: Any) -> Any:
+    async def command(self, *args: Any, timeout_s: float = 2.0) -> Any:
         if self._closed:
             raise MpvIPCError("ipc closed")
         rid = self._next_request_id
@@ -141,7 +141,11 @@ class MpvIPC:
         except Exception:
             self._pending.pop(rid, None)
             raise
-        return await fut
+        try:
+            return await asyncio.wait_for(fut, timeout=timeout_s)
+        except asyncio.TimeoutError as exc:
+            self._pending.pop(rid, None)
+            raise MpvIPCError(f"mpv command timed out: {args!r}") from exc
 
     async def pause(self) -> None:
         await self.set_property("pause", True)

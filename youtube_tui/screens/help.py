@@ -81,7 +81,8 @@ class HelpScreen(ModalScreen[None]):
         align: center middle;
     }
     HelpScreen #help-box {
-        width: 70;
+        width: 90%;
+        max-width: 70;
         height: auto;
         padding: 1 2;
         background: #1a1a1a;

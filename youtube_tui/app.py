@@ -4,6 +4,7 @@ import asyncio
 import logging
 import sys
 import webbrowser
+from logging import NullHandler
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
@@ -32,14 +33,17 @@ _INLINE_INPUT_CONF = "\n".join(
 
 
 def _setup_logger() -> logging.Logger:
-    ensure_dirs()
     log = logging.getLogger("youtube_tui")
     if log.handlers:
         return log
     log.setLevel(logging.INFO)
-    handler = RotatingFileHandler(
-        LOG_DIR / "app.log", maxBytes=1_000_000, backupCount=2
-    )
+    try:
+        ensure_dirs()
+        handler: logging.Handler = RotatingFileHandler(
+            LOG_DIR / "app.log", maxBytes=1_000_000, backupCount=2
+        )
+    except OSError:
+        handler = NullHandler()
     handler.setFormatter(
         logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
     )
@@ -98,8 +102,13 @@ class YouTubeTUI(App[None]):
         if self._inline_proc is not None and self._inline_proc.returncode is None:
             try:
                 self._inline_proc.kill()
+                await asyncio.wait_for(self._inline_proc.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                pass
             except Exception:
                 pass
+            finally:
+                self._inline_proc = None
         for mp in list(self._mpv_processes):
             try:
                 await mp.terminate()
@@ -140,7 +149,8 @@ class YouTubeTUI(App[None]):
 
         if isinstance(self.screen, SearchScreen):
             return
-        self.push_screen(SearchScreen())
+        if not self._pop_to(SearchScreen):
+            self.push_screen(SearchScreen())
 
     def action_go_library(self) -> None:
         from .screens.library import LibraryScreen
@@ -225,7 +235,7 @@ class YouTubeTUI(App[None]):
             *vo_args,
             "--hwdec=no",
             "--profile=sw-fast",
-            "--ytdl-format=best[height<=480]/best",
+            "--ytdl-format=bv*[height<=480][vcodec^=avc1]+ba/bv*[height<=480]+ba/b[height<=480]/best[height<=480]/best",
             "--cache=yes",
             "--cache-secs=20",
             "--demuxer-readahead-secs=20",

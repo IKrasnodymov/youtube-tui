@@ -65,6 +65,22 @@ def test_record_watch_appends_history_and_upserts_video(lib: Library) -> None:
     assert len(hrows2) == 2
 
 
+def test_record_watch_handles_same_millisecond_duplicates(lib: Library, monkeypatch) -> None:
+    v = _make_video()
+    monkeypatch.setattr("youtube_tui.storage.db._now_ms", lambda: 123456)
+
+    lib.record_watch(v, position_s=1)
+    lib.record_watch(v, position_s=2)
+
+    hrows = lib._conn.execute(
+        "SELECT watched_at, position_s FROM history ORDER BY watched_at"
+    ).fetchall()
+    assert [(r["watched_at"], r["position_s"]) for r in hrows] == [
+        (123456, 1),
+        (123457, 2),
+    ]
+
+
 def test_toggle_favorite_round_trip(lib: Library) -> None:
     v = _make_video()
     assert lib.is_favorited(v.id) is False

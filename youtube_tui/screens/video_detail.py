@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from rich.text import Text
+from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
@@ -46,6 +47,12 @@ class VideoDetailScreen(Screen):
     VideoDetailScreen #detail-thumb Image {
         width: 100%;
         height: 100%;
+    }
+    VideoDetailScreen.-compact #detail-body {
+        padding: 1;
+    }
+    VideoDetailScreen.-compact #detail-thumb {
+        display: none;
     }
     VideoDetailScreen #detail-info {
         width: 1fr;
@@ -137,9 +144,16 @@ class VideoDetailScreen(Screen):
         return text
 
     def on_mount(self) -> None:
+        self._apply_compact_mode()
         self.run_worker(self._load_thumb(), exclusive=True, group="detail-thumb")
         self.run_worker(self._enrich_detail(), exclusive=True, group="detail-info")
         self._refresh_fav_status()
+
+    def on_resize(self, event: events.Resize) -> None:
+        self._apply_compact_mode()
+
+    def _apply_compact_mode(self) -> None:
+        self.set_class(self.size.width > 0 and self.size.width < 90, "-compact")
 
     async def _load_thumb(self) -> None:
         if not self.video.thumbnail_url:

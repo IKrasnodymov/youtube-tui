@@ -46,6 +46,14 @@ python3.11 -m venv .venv
 .venv/bin/ytui
 ```
 
+For development and tests:
+
+```bash
+.venv/bin/pip install -e ".[dev]"
+.venv/bin/pytest -q
+YTUI_NET=1 .venv/bin/pytest -q tests/test_ytdlp_client.py::test_search_smoke
+```
+
 ## Keybindings
 
 | Key | Action |

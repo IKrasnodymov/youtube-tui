@@ -42,7 +42,8 @@ class NowPlayingScreen(ModalScreen[None]):
         align: center middle;
     }
     NowPlayingScreen #np-box {
-        width: 78;
+        width: 90%;
+        max-width: 78;
         height: auto;
         padding: 1 2;
         background: #1a1a1a;
@@ -86,6 +87,7 @@ class NowPlayingScreen(ModalScreen[None]):
         self._position: float = 0.0
         self._paused: bool = False
         self._closed: bool = False
+        self._started: bool = False
 
     def compose(self) -> ComposeResult:
         with Vertical(id="np-box"):
@@ -132,14 +134,34 @@ class NowPlayingScreen(ModalScreen[None]):
     async def on_mount(self) -> None:
         self.ipc = MpvIPC(self.proc.ipc_path)
         try:
-            await self.ipc.connect(retries=50, delay_s=0.1)
+            await self._connect_ipc()
         except Exception as e:
             self.app.notify(f"Couldn't connect to mpv: {e}", severity="error")
+            try:
+                await self.proc.terminate()
+            except Exception:
+                pass
             await self._finish(record=False)
             return
 
         self.run_worker(self._observe(), exclusive=True, group="np-observe")
         self.run_worker(self._wait_exit(), exclusive=True, group="np-wait")
+
+    async def _connect_ipc(self) -> None:
+        assert self.ipc is not None
+        last_error: Exception | None = None
+        for _ in range(50):
+            if self.proc.proc.returncode is not None:
+                raise MpvIPCError(
+                    f"mpv exited with code {self.proc.proc.returncode}; see mpv.log"
+                )
+            try:
+                await self.ipc.connect(retries=1, delay_s=0)
+                return
+            except Exception as e:
+                last_error = e
+                await asyncio.sleep(0.1)
+        raise MpvIPCError(f"could not connect to mpv ipc: {last_error!r}")
 
     async def _observe(self) -> None:
         assert self.ipc is not None
@@ -151,6 +173,8 @@ class NowPlayingScreen(ModalScreen[None]):
                     self._duration = float(data)
                 elif name == "pause":
                     self._paused = bool(data)
+                if self._position > 0 or self._duration is not None:
+                    self._started = True
                 self._refresh_ui()
         except (MpvIPCError, asyncio.CancelledError):
             return
@@ -166,11 +190,16 @@ class NowPlayingScreen(ModalScreen[None]):
             self._bar.update(total=100, progress=0)
 
     async def _wait_exit(self) -> None:
+        rc: int | None = None
         try:
-            await self.proc.wait()
+            rc = await self.proc.wait()
         except Exception:
             pass
-        await self._finish(record=True)
+        if rc not in (None, 0):
+            self.app.notify(
+                f"mpv exited with code {rc}. See mpv.log", severity="warning", timeout=6
+            )
+        await self._finish(record=(rc == 0 or self._started))
 
     async def _finish(self, *, record: bool) -> None:
         if self._closed:
@@ -187,6 +216,7 @@ class NowPlayingScreen(ModalScreen[None]):
                 await self.ipc.close()
             except Exception:
                 pass
+        self.proc.cleanup_socket()
         self.dismiss()
 
     # ---- key actions ------------------------------------------------------
